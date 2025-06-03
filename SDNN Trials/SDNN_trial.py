@@ -55,7 +55,7 @@ def read_onnx(onnx_path):
 
 
 def round_tensor(x):
-    # Round each element: >=0.5 up, else down
+    # Round each one: >=0.5 up, else down
     return np.array([int(np.floor(val + 0.5)) for val in x])
 
 
@@ -71,10 +71,10 @@ def temporal_propagation(model_path, T):
     for i in range(input_size):
         row = input(f"Input feature {i} (space-separated {T} float values): ").strip().split()
         temporal_input.append([float(x) for x in row])
-    temporal_input = np.array(temporal_input)  # shape: (input_size, T)
+
+    temporal_input = np.array(temporal_input)
 
     # Extract weight matrices
-    # Assume keys: 'fc1.weight' shape (hidden_size, input_size); 'fc2.weight' shape (output_size, hidden_size)
     W_input_hidden = weights['fc1.weight']
     W_hidden_output = weights['fc2.weight']
 
@@ -85,42 +85,42 @@ def temporal_propagation(model_path, T):
     prev_output_sigma = np.zeros(W_hidden_output.shape[0])
 
     outputs = []
-    print("\n-- Temporal Inference with Δ and Σ modules --")
+    print("\n-- using sigma delta modules here --")
     for t in range(T):
-        # Step 1: Round input
+
+        # Step 1: Round thge input
         curr_input_float = temporal_input[:, t]
         curr_input_rounded = round_tensor(curr_input_float)
 
-        # Step 2: Δ at input
+        # Step 2: delta at input
         delta_input = curr_input_rounded - prev_input_rounded
 
-        # Step 3: Propagate Δ to hidden layer
+        # Step 3: Propagate it to hidden layer
         hidden_delta_input = W_input_hidden.dot(delta_input)
 
-        # Step 4: Σ at hidden: accumulate
+        # Step 4: sigma at hidden
         hidden_sigma_input = prev_hidden_sigma + hidden_delta_input
 
-        # Activation (identity) and rounding at hidden
+        # Activation and rounding 
         hidden_activation = hidden_sigma_input.copy()
         hidden_rounded = round_tensor(hidden_activation)
 
-        # Δ at hidden
+        # delta at hidden
         hidden_delta = hidden_rounded - prev_hidden_rounded
 
-        # Step 5: Propagate Δ hidden to output
+        # Step 5: Propagate delta hidden to output
         output_delta_input = W_hidden_output.dot(hidden_delta)
 
-        # Σ at output: accumulate
+        # sigma at output: accumulate
         output_sigma_input = prev_output_sigma + output_delta_input
 
-        # Activation (identity) and rounding at output
+        # Activation and rounding at output
         output_activation = output_sigma_input.copy()
         output_rounded = round_tensor(output_activation)
 
-        # Store result (assuming single output dimension or take all)
+        # storing result in one list
         outputs.append(output_rounded.tolist())
 
-        # Print debug info
         print(f"Time {t+1}: Input Rounded: {curr_input_rounded.tolist()}")
         print(f"  Δ Input: {delta_input.tolist()}")
         print(f"  Hidden Σ Input: {hidden_sigma_input.tolist()}")
@@ -139,8 +139,7 @@ def temporal_propagation(model_path, T):
     print("\nFinal Outputs for all T frames:")
     print(np.array(outputs).T)  # shape: (output_size, T)
 
-
-# Run
+# now of course in this model we have 28x28 input features, and 10 output features so idk what to do with the input
 onnx_path = r"C:\Users\Deborshi Chakrabarti\Desktop\ISI\SDNN\two_layer_dnn.onnx"
 T = int(input("Enter the number of time frames (T): "))
 temporal_propagation(onnx_path, T)
