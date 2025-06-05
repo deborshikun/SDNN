@@ -77,8 +77,7 @@ def temporal_propagation(model_path, T):
     fc2_weight = weights['fc2.weight']  # shape: (10, 128)
     fc2_bias = weights['fc2.bias']      # shape: (10,)
 
-    # No onnxruntime needed – simulate manually
-    print("\n-- Temporal Inference --")
+    print("\n-- Doing the calculation --")
     outputs = []
     for t in range(T):
         input_t = temporal_input[:, t]           # shape: (784,)
@@ -98,8 +97,6 @@ def temporal_propagation(model_path, T):
     print("\nFinal Output (1 x T):")
     print(np.array(outputs).reshape(1, T))
 
-
-# Run the function with your model path and T frames
 onnx_path = r"C:\Users\Deborshi Chakrabarti\Desktop\ISI\SDNN\two_layer_dnn.onnx"
 T = int(input("Enter the number of time frames (T): "))
 temporal_propagation(onnx_path, T)
