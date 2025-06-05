@@ -1,0 +1,146 @@
+#trial code where i am using the particular onnx model for the relu. if not relu we change the activations to *_sigma_input.copy()
+
+import onnx
+from onnx import numpy_helper, shape_inference
+import numpy as np
+
+def read_onnx(onnx_path: str):
+    model = onnx.load(onnx_path)
+    inferred = shape_inference.infer_shapes(model)
+    graph = inferred.graph
+
+    #Determine the entire input dimension
+    full_input_size = None
+    for input_tensor in graph.input:
+        dims = input_tensor.type.tensor_type.shape.dim
+        shape_list = []
+        for d in dims:
+            if d.HasField("dim_value") and d.dim_value > 0:
+                shape_list.append(d.dim_value)
+        if not shape_list:
+            raise RuntimeError("Cannot infer input shape.")
+        full_input_size = int(np.prod(shape_list))
+        break
+
+    if full_input_size is None:
+        raise RuntimeError("Input dimension not found.")
+
+    #Load weight initializers
+    weights = {}
+    for init in graph.initializer:
+        weights[init.name] = numpy_helper.to_array(init)
+
+    #fc1.weight and fc2.weight
+    if "fc1.weight" not in weights or "fc2.weight" not in weights:
+        raise RuntimeError("Expected fc1.weight and fc2.weight in ONNX file.")
+    W_in_h  = weights["fc1.weight"]   # shape (hidden_size, full_input_size)
+    W_h_out = weights["fc2.weight"]   # shape (output_size, hidden_size)
+
+    hidden_size = W_in_h.shape[0]
+    output_size = W_h_out.shape[0]
+
+    print("\n-- ONNX Model Info --")
+    print(f" Full input dimension = {full_input_size}")
+    print(f" Hidden layer size     = {hidden_size}")
+    print(f" Output size           = {output_size}\n")
+    return full_input_size, hidden_size, output_size, W_in_h, W_h_out
+
+
+def round_vector(v: np.ndarray) -> np.ndarray:
+    rounded = np.floor(v + 0.5)  # Add 0.5 and floor to round half up (since >=)
+    return rounded.astype(int)
+
+
+def temporal_sdnn(onnx_path: str):
+    #Load model, get dimensions and weights
+    full_input_size, hidden_size, output_size, W_in_h, W_h_out = read_onnx(onnx_path)
+
+    #Ask user for n and T
+    n = int(input(f"Enter the number of active input nodes (1–{full_input_size}): ").strip())
+
+    if n < 1 or n > full_input_size:
+        print(f"Invalid n; defaulting to n = {full_input_size}.")
+        n = full_input_size
+
+    T = int(input("Enter the number of time frames (T): ").strip())
+    if T < 1:
+        raise ValueError("T must be ≥ 1.")
+
+    # Read n×T floats from user
+    print(f"\nPlease enter an {n}×{T} matrix of floats:")
+    user_input = np.zeros((full_input_size, T), dtype=float)
+    for i in range(n):
+        row_vals = input(f"  Row {i+1} ({T} floats): ").strip().split()
+        if len(row_vals) != T:
+            raise ValueError(f"Expected {T} floats on row {i+1}, got {len(row_vals)}")
+        user_input[i, :] = [float(x) for x in row_vals]
+
+    # Initialize all previous‐state arrays to zero
+    prev_input_rounded  = np.zeros(full_input_size, dtype=int)
+    prev_hidden_rounded = np.zeros(hidden_size, dtype=int)
+    prev_hidden_sigma   = np.zeros(hidden_size, dtype=float)
+    prev_output_sigma   = np.zeros(output_size, dtype=float)
+
+    all_outputs = []
+
+    print("\n Beginning temporal inference (delta-sigmausing ReLU)\n")
+    for t in range(T):
+        print(f"Time Frame t = {t+1}")
+
+        #Round the current input floats
+        curr_input_float   = user_input[:, t]
+        curr_input_rounded = round_vector(curr_input_float)
+        print(f"  Input floats (t={t+1}):      {curr_input_float.tolist()[:n]}")
+        print(f"  Rounded input x^({t+1}):      {curr_input_rounded.tolist()[:n]}")
+
+        #del_input = x_rounded - prev_input_rounded
+        delta_input = curr_input_rounded - prev_input_rounded
+        print(f"  del_input = x^({t+1})−x_last:   {delta_input.tolist()[:n]}")
+
+        #hidden_delta_input = W_in_h * del_input
+        hidden_delta_input = W_in_h.dot(delta_input)
+        print(f"  Hidden w(del_input) (h_Δ_in):    {hidden_delta_input.tolist()}")
+
+        #sig_hidden = prev_hidden_sigma + hidden_delta_input
+        hidden_sigma_input = prev_hidden_sigma + hidden_delta_input
+        print(f"  sig_hidden (before activation):  {hidden_sigma_input.tolist()}")
+
+        #ReLU activation, then rounding
+        hidden_activation = np.maximum(0, hidden_sigma_input)
+        hidden_rounded    = round_vector(hidden_activation)
+        hidden_delta      = hidden_rounded - prev_hidden_rounded
+        print(f"  Hidden activation ReLU(sig):      {hidden_activation.tolist()}")
+        print(f"  Hidden rounded (h^rounded):     {hidden_rounded.tolist()}")
+        print(f"  del_hidden = h^rounded−h_last:    {hidden_delta.tolist()}")
+
+        #output_delta_input = W_h_out * del_hidden
+        output_delta_input = W_h_out.dot(hidden_delta)
+        print(f"  Output w(del_hidden) (y_del_in):     {output_delta_input.tolist()}")
+
+        #sig_output = prev_output_sigma + output_delta_input
+        output_sigma_input = prev_output_sigma + output_delta_input
+        print(f"  sig_output (before activation):    {output_sigma_input.tolist()}")
+
+        #ReLU activation, then rounding at output
+        output_activation  = np.maximum(0, output_sigma_input)
+        output_rounded     = round_vector(output_activation)
+        print(f"  Output activation ReLU(sig):       {output_activation.tolist()}")
+        print(f"  Output rounded (y^rounded):      {output_rounded.tolist()}\n")
+
+        #time frame output
+        all_outputs.append(output_rounded.copy())
+
+        #Updation of previous states
+        prev_input_rounded  = curr_input_rounded.copy()
+        prev_hidden_rounded = hidden_rounded.copy()
+        prev_hidden_sigma   = hidden_sigma_input.copy()
+        prev_output_sigma   = output_sigma_input.copy()
+
+    #printing all frames output
+    all_outputs = np.stack(all_outputs, axis=1) 
+    print("Final sequence of rounded outputs (shape: output_size × T)")
+    print(all_outputs)
+
+if __name__ == "__main__":
+    onnx_path = r"C:\Users\Deborshi Chakrabarti\Desktop\ISI\SDNN\SDNN Trials\two_layer_dnn.onnx"  
+    temporal_sdnn(onnx_path)
